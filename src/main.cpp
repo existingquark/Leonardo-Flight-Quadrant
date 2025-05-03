@@ -1,8 +1,12 @@
 // -----------------------------------------------------------------------------
 // MoonDog Throttle Quadrant Firmware
-// Embedded firmware for Arduino Leonardo (ATmega32u4) as a USB HID Game Device
-// Reads analog throttle axis + 32 button inputs over I2C via two MCP23017 expanders
-// Implements smoothing and dynamic calibration for unstable potentiometers
+// Arduino Leonardo (ATmega32u4) USB HID Game Controller
+// - Reads 7 analog axes (Throttle 1–6, Axis 7 optional)
+// - Reads 32 buttons via two MCP23017 I2C expanders
+// - Implements rolling average smoothing for analog noise reduction
+// - Includes real-time serial monitor output with live updating
+// - Adds adaptive deadband logic for Throttle L/R
+// - Reduces sensitivity of Trim axis (Throttle3)
 // -----------------------------------------------------------------------------
 
 #include <Wire.h>
@@ -10,9 +14,10 @@
 #include <Joystick.h>
 #include <PluggableUSB.h>
 
-// -----------------------------------------------------------------------------
-// USB HID Descriptor Check
-// -----------------------------------------------------------------------------
+#ifndef _USING_DYNAMIC_HID
+#define _USING_DYNAMIC_HID
+#endif
+
 #if defined(_USING_DYNAMIC_HID)
 #pragma message("✅ Dynamic HID is ENABLED")
 #else
@@ -20,55 +25,65 @@
 #endif
 
 // -----------------------------------------------------------------------------
-// Function Prototypes
-// -----------------------------------------------------------------------------
-void readButtons();
-void readAxes();
-int getSmoothedThrottle();
-void updateThrottleCalibration(int raw);
-
-// -----------------------------------------------------------------------------
-// Joystick HID Report Definition
+// Joystick HID Interface
 // -----------------------------------------------------------------------------
 Joystick_ Joystick(JOYSTICK_DEFAULT_REPORT_ID,
                    JOYSTICK_TYPE_MULTI_AXIS, 32, 2,
-                   true, true, true,     // X, Y, Z
-                   true, true, true,     // Rx, Ry, Rz
-                   false, false, false,  // rudder, throttle, accelerator
+                   true, true, true, // X, Y, Z
+                   true, true, true, // Rx, Ry, Rz
+                   false, false, false,
                    false, false);
 
 // -----------------------------------------------------------------------------
-// I2C Expanders (Button Banks)
+// I/O Expanders (MCP23017) for 32 Button Inputs
 // -----------------------------------------------------------------------------
 Adafruit_MCP23X17 mcp1;
 Adafruit_MCP23X17 mcp2;
 
 // -----------------------------------------------------------------------------
-// Throttle Axes
+// Axis Configuration and Smoothing Buffers
 // -----------------------------------------------------------------------------
-const int axisPins[7] = {A0, A1, A2, A3, A4, A5, A6};
+const int NUM_AXES = 7;
+const int axisPins[NUM_AXES] = {A0, A1, A2, A3, A4, A5, A6};
+
+const int AXIS_RAW_MIN[NUM_AXES] = {196, 196, 196, 196, 196, 196, 196};
+const int AXIS_RAW_MAX[NUM_AXES] = {1023, 1023, 1023, 1023, 1023, 1023, 1023};
+
+const int filterWindowSize = 10;
+int axisBuffers[NUM_AXES][filterWindowSize] = {{0}};
+int axisSums[NUM_AXES] = {0};
+int axisIndices[NUM_AXES] = {0};
+
+const char *axisLabels[NUM_AXES] = {
+    "Throttle L", "Throttle R", "Trim", "Mixture 1",
+    "Mixture 2", "TBD Axis", "TBD Axis"};
 
 // -----------------------------------------------------------------------------
-// Smoothing Filter for Throttle 1
+// Adaptive Deadband & Rate Limiting
 // -----------------------------------------------------------------------------
-const int filterWindowSize = 15;
-int throttleBuffer[filterWindowSize] = {0};
-int throttleIndex = 0;
-long throttleSum = 0;
+int lastStableOutput[NUM_AXES] = {0};
+const int DEADZONE_THRESHOLDS[NUM_AXES] = {
+    1, 1, 0, 0, 0, 0, 0 // Deadband on Throttle L/R only
+};
+
+const float TRIM_RESPONSE_SCALE = 0.5f; // Trim moves at half speed
+
+int applyDeadband(int axisIndex, int currentMapped)
+{
+  int delta = abs(currentMapped - lastStableOutput[axisIndex]);
+  if (delta >= DEADZONE_THRESHOLDS[axisIndex])
+  {
+    lastStableOutput[axisIndex] = currentMapped;
+  }
+  return lastStableOutput[axisIndex];
+}
 
 // -----------------------------------------------------------------------------
-// Dynamic Calibration Bounds for Throttle 1
-// -----------------------------------------------------------------------------
-int throttleRawMin = 1023;
-int throttleRawMax = 0;
-
-// -----------------------------------------------------------------------------
-// Setup Function - Called Once at Startup
+// Setup Routine
 // -----------------------------------------------------------------------------
 void setup()
 {
   Wire.begin();
-
   mcp1.begin_I2C(0x20);
   mcp2.begin_I2C(0x21);
 
@@ -79,102 +94,138 @@ void setup()
   }
 
   Joystick.begin();
-
   Serial.begin(9600);
-  while (!Serial) {}
-  Serial.println("[MoonDog] Throttle Debug Initialized");
-
-  // Initialize Smoothing Buffer
-  int initial = analogRead(axisPins[0]);
-  for (int i = 0; i < filterWindowSize; i++)
+  while (!Serial)
   {
-    throttleBuffer[i] = initial;
-    throttleSum += initial;
   }
+  Serial.println("Throttle Debug Initialized");
 
-  // Initialize Calibration Range
-  throttleRawMin = initial;
-  throttleRawMax = initial;
+  for (int a = 0; a < NUM_AXES; a++)
+  {
+    int initVal = analogRead(axisPins[a]);
+    for (int i = 0; i < filterWindowSize; i++)
+    {
+      axisBuffers[a][i] = initVal;
+      axisSums[a] += initVal;
+    }
+    lastStableOutput[a] = map(initVal, AXIS_RAW_MIN[a], AXIS_RAW_MAX[a], 0, 1023);
+  }
 }
 
 // -----------------------------------------------------------------------------
-// Read Digital Button Inputs from Two MCP23017 Expanders
+// Read Button States from MCP23017 Expanders
 // -----------------------------------------------------------------------------
 void readButtons()
 {
   for (int i = 0; i < 16; i++)
   {
     Joystick.setButton(i, !mcp1.digitalRead(i));
-  }
-  for (int i = 0; i < 16; i++)
-  {
     Joystick.setButton(i + 16, !mcp2.digitalRead(i));
   }
 }
 
 // -----------------------------------------------------------------------------
-// Apply Rolling Average Smoothing and Dynamic Calibration to Throttle 1
+// Return Smoothed and Mapped Value for a Given Axis
 // -----------------------------------------------------------------------------
-int getSmoothedThrottle()
+int getSmoothedAxis(int axisIndex, int &rawOut, int &averageOut)
 {
-  int raw = analogRead(axisPins[0]);
+  rawOut = analogRead(axisPins[axisIndex]);
 
-  // Update calibration range
-  updateThrottleCalibration(raw);
+  axisSums[axisIndex] -= axisBuffers[axisIndex][axisIndices[axisIndex]];
+  axisBuffers[axisIndex][axisIndices[axisIndex]] = rawOut;
+  axisSums[axisIndex] += rawOut;
+  axisIndices[axisIndex] = (axisIndices[axisIndex] + 1) % filterWindowSize;
 
-  // Update moving average window
-  throttleSum -= throttleBuffer[throttleIndex];
-  throttleBuffer[throttleIndex] = raw;
-  throttleSum += raw;
-  throttleIndex = (throttleIndex + 1) % filterWindowSize;
+  averageOut = axisSums[axisIndex] / filterWindowSize;
 
-  int average = throttleSum / filterWindowSize;
+  int mapped = map(averageOut,
+                   AXIS_RAW_MIN[axisIndex], AXIS_RAW_MAX[axisIndex],
+                   0, 1023);
 
-  // Map and constrain to 0–1023 range
-  int mapped = map(average, throttleRawMin - 10, throttleRawMax + 10, 0, 1023);
   mapped = constrain(mapped, 0, 1023);
 
-  // Debug output
-  Serial.print("Raw: ");
-  Serial.print(raw);
-  Serial.print(" | Smoothed: ");
-  Serial.print(average);
-  Serial.print(" | Mapped: ");
-  Serial.print(mapped);
-  Serial.print(" | Min: ");
-  Serial.print(throttleRawMin);
-  Serial.print(" | Max: ");
-  Serial.println(throttleRawMax);
+  if (axisIndex == 2)
+  {
+    mapped = lastStableOutput[axisIndex] + (mapped - lastStableOutput[axisIndex]) * TRIM_RESPONSE_SCALE;
+  }
 
   return mapped;
 }
 
 // -----------------------------------------------------------------------------
-// Dynamically Expand Calibration Range to Fit Observed Values
-// -----------------------------------------------------------------------------
-void updateThrottleCalibration(int raw)
-{
-  if (raw < throttleRawMin)
-    throttleRawMin = raw;
-  if (raw > throttleRawMax)
-    throttleRawMax = raw;
-}
-
-// -----------------------------------------------------------------------------
-// Read Analog Axes (Throttle 1 Only for Now)
+// Read and Transmit Axis Values (Throttle 1–6 Only)
 // -----------------------------------------------------------------------------
 void readAxes()
 {
-  int throttle = getSmoothedThrottle();
-  Joystick.setXAxis(throttle);
+  for (int i = 0; i < 6; i++)
+  {
+    int raw, avg;
+    int mapped = getSmoothedAxis(i, raw, avg);
+    int stable = applyDeadband(i, mapped);
+
+    switch (i)
+    {
+    case 0:
+      Joystick.setXAxis(stable);
+      break;
+    case 1:
+      Joystick.setYAxis(stable);
+      break;
+    case 2:
+      Joystick.setZAxis(stable);
+      break;
+    case 3:
+      Joystick.setRxAxis(stable);
+      break;
+    case 4:
+      Joystick.setRyAxis(stable);
+      break;
+    case 5:
+      Joystick.setRzAxis(stable);
+      break;
+    }
+  }
 }
 
 // -----------------------------------------------------------------------------
-// Main Loop - Continuously Poll Inputs and Send HID Report
+// Debug Output for Serial Monitor — Live Table View
+// -----------------------------------------------------------------------------
+void printAxisDebug()
+{
+  Serial.print("\033[2J\033[H");
+  Serial.println("─────────────────────────────────────────────────────────────────────────────");
+  Serial.println("  Axis         Raw    Smoothed    Mapped     ΔMapped");
+  Serial.println("─────────────────────────────────────────────────────────────────────────────");
+
+  for (int i = 0; i < 6; i++)
+  {
+    int raw, avg;
+    int mapped = getSmoothedAxis(i, raw, avg);
+    int delta = abs(mapped - lastStableOutput[i]);
+    int stable = applyDeadband(i, mapped);
+
+    Serial.print("  ");
+    Serial.print(axisLabels[i]);
+    Serial.print("  |  ");
+    Serial.print(raw);
+    Serial.print("  |    ");
+    Serial.print(avg);
+    Serial.print("     |   ");
+    Serial.print(mapped);
+    Serial.print("     |     ");
+    Serial.println(delta);
+  }
+
+  Serial.println("─────────────────────────────────────────────────────────────────────────────");
+}
+
+// -----------------------------------------------------------------------------
+// Main Loop — Read Inputs and Print Debug Output
 // -----------------------------------------------------------------------------
 void loop()
 {
   readButtons();
   readAxes();
-  delay(10); // Allow USB HID time to update
+  printAxisDebug();
+  delay(100);
 }
