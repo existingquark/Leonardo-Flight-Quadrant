@@ -1,0 +1,48 @@
+<SimBase.Document Type="Controls" version="1,0">
+    <Descr>Throttle Quadrant Custom v1</Descr>
+    <Filename>ThrottleQuadrant_Custom_v1.xml</Filename>
+    <SimControls.Map>
+        <!-- AXES MAPPINGS -->
+        <Action name="THROTTLE_AXIS_1" axis="X" />
+        <Action name="MIXTURE_AXIS_1" axis="Y" />
+        <Action name="PROP_PITCH_AXIS_1" axis="Z" />
+        <Action name="COWL_FLAPS_AXIS" axis="Rx" />
+        <Action name="SPOILERS_AXIS" axis="Ry" />
+        <Action name="GEAR_AXIS" axis="Rz" />
+        <Action name="ELEVATOR_TRIM_AXIS" axis="Slider1" />
+
+        <!-- BUTTON MAPPINGS -->
+        <Action name="GEAR_TOGGLE" trigger="Button0" />
+        <Action name="FLAPS_INCR" trigger="Button1" />
+        <Action name="FLAPS_DECR" trigger="Button2" />
+        <Action name="TOGGLE_BEACON_LIGHTS" trigger="Button3" />
+        <Action name="TOGGLE_NAV_LIGHTS" trigger="Button4" />
+        <Action name="TOGGLE_LANDING_LIGHTS" trigger="Button5" />
+        <Action name="TOGGLE_TAXI_LIGHTS" trigger="Button6" />
+        <Action name="AUTOPILOT_MASTER" trigger="Button7" />
+        <Action name="AP_PANEL_ALTITUDE_HOLD" trigger="Button8" />
+        <Action name="AP_PANEL_HEADING_HOLD" trigger="Button9" />
+        <Action name="AP_PANEL_NAV_HOLD" trigger="Button10" />
+        <Action name="AP_PANEL_APR_HOLD" trigger="Button11" />
+        <Action name="AP_PANEL_VS_HOLD" trigger="Button12" />
+        <Action name="TOGGLE_MASTER_BATTERY" trigger="Button13" />
+        <Action name="TOGGLE_MASTER_ALTERNATOR" trigger="Button14" />
+        <Action name="TOGGLE_ENGINE_1_FUEL_VALVE" trigger="Button15" />
+        <Action name="ENGINE_AUTOSTART" trigger="Button16" />
+        <Action name="TOGGLE_FUEL_PUMP" trigger="Button17" />
+        <Action name="TOGGLE_AVIONICS_MASTER" trigger="Button18" />
+        <Action name="TOGGLE_PITOT_HEAT" trigger="Button19" />
+        <Action name="TOGGLE_DEICE" trigger="Button20" />
+        <Action name="PARKING_BRAKES" trigger="Button21" />
+        <Action name="TOGGLE_PUSHBACK" trigger="Button22" />
+        <Action name="TOGGLE_TAILWHEEL_LOCK" trigger="Button23" />
+        <Action name="TOGGLE_CABIN_LIGHTS" trigger="Button24" />
+        <Action name="TOGGLE_PANEL_LIGHTS" trigger="Button25" />
+        <Action name="TOGGLE_RECOGNITION_LIGHTS" trigger="Button26" />
+        <Action name="TOGGLE_WING_LIGHTS" trigger="Button27" />
+        <Action name="TOGGLE_STROBE_LIGHTS" trigger="Button28" />
+        <Action name="SIM_RATE_INCR" trigger="Button29" />
+        <Action name="SIM_RATE_DECR" trigger="Button30" />
+        <Action name="PAUSE_TOGGLE" trigger="Button31" />
+    </SimControls.Map>
+</SimBase.Document>
