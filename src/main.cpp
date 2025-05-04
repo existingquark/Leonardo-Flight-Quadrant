@@ -6,7 +6,7 @@
 // - Implements rolling average smoothing for analog noise reduction
 // - Includes real-time serial monitor output with live updating
 // - Adds adaptive deadband logic for Throttle L/R
-// - Reduces sensitivity of Trim axis (Throttle3)
+// - Adds virtual trim accumulator to simulate multi-turn trim wheel
 // -----------------------------------------------------------------------------
 
 #include <Wire.h>
@@ -59,14 +59,17 @@ const char *axisLabels[NUM_AXES] = {
     "Mixture 2", "TBD Axis", "TBD Axis"};
 
 // -----------------------------------------------------------------------------
-// Adaptive Deadband & Rate Limiting
+// Adaptive Deadband & Virtual Trim Accumulation
 // -----------------------------------------------------------------------------
 int lastStableOutput[NUM_AXES] = {0};
 const int DEADZONE_THRESHOLDS[NUM_AXES] = {
-    1, 1, 0, 0, 0, 0, 0 // Deadband on Throttle L/R only
-};
+    1, 1, 0, 0, 0, 0, 0};
 
-const float TRIM_RESPONSE_SCALE = 0.5f; // Trim moves at half speed
+// Virtual trim state (Z axis): accumulate relative movement for scaled response
+float accumulatedTrim = 512.0f; // Start at midpoint
+float lastTrimAvg = 0;
+const float TRIM_INCREMENT_SCALE = 0.5f;
+const int TRIM_AXIS_INDEX = 2; // Trim is axis 2
 
 int applyDeadband(int axisIndex, int currentMapped)
 {
@@ -110,6 +113,7 @@ void setup()
     }
     lastStableOutput[a] = map(initVal, AXIS_RAW_MIN[a], AXIS_RAW_MAX[a], 0, 1023);
   }
+  lastTrimAvg = axisSums[TRIM_AXIS_INDEX] / filterWindowSize;
 }
 
 // -----------------------------------------------------------------------------
@@ -141,15 +145,7 @@ int getSmoothedAxis(int axisIndex, int &rawOut, int &averageOut)
   int mapped = map(averageOut,
                    AXIS_RAW_MIN[axisIndex], AXIS_RAW_MAX[axisIndex],
                    0, 1023);
-
-  mapped = constrain(mapped, 0, 1023);
-
-  if (axisIndex == 2)
-  {
-    mapped = lastStableOutput[axisIndex] + (mapped - lastStableOutput[axisIndex]) * TRIM_RESPONSE_SCALE;
-  }
-
-  return mapped;
+  return constrain(mapped, 0, 1023);
 }
 
 // -----------------------------------------------------------------------------
@@ -161,6 +157,18 @@ void readAxes()
   {
     int raw, avg;
     int mapped = getSmoothedAxis(i, raw, avg);
+
+    // Handle trim axis separately for slow accumulation
+    if (i == TRIM_AXIS_INDEX)
+    {
+      float delta = avg - lastTrimAvg;
+      lastTrimAvg = avg;
+      accumulatedTrim += delta * TRIM_INCREMENT_SCALE;
+      accumulatedTrim = constrain(accumulatedTrim, 0, 1023);
+      Joystick.setZAxis((int)accumulatedTrim);
+      continue;
+    }
+
     int stable = applyDeadband(i, mapped);
 
     switch (i)
@@ -170,9 +178,6 @@ void readAxes()
       break;
     case 1:
       Joystick.setYAxis(stable);
-      break;
-    case 2:
-      Joystick.setZAxis(stable);
       break;
     case 3:
       Joystick.setRxAxis(stable);
